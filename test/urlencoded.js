@@ -1,3 +1,4 @@
+'use strict'
 
 var assert = require('assert')
 var asyncHooks = tryRequire('async_hooks')
@@ -47,6 +48,74 @@ describe('bodyParser.urlencoded()', function () {
       .expect(200, '{}', done)
   })
 
+  var extendedValues = [true, false]
+  extendedValues.forEach(function (extended) {
+    describe('in ' + (extended ? 'extended' : 'simple') + ' mode', function () {
+      it.skip('should parse x-www-form-urlencoded with an explicit iso-8859-1 encoding', function (done) {
+        var server = createServer({ extended: extended })
+        request(server)
+          .post('/')
+          .set('Content-Type', 'application/x-www-form-urlencoded; charset=iso-8859-1')
+          .send('%A2=%BD')
+          .expect(200, '{"¢":"½"}', done)
+      })
+
+      it('should parse x-www-form-urlencoded with unspecified iso-8859-1 encoding when the defaultCharset is set to iso-8859-1', function (done) {
+        var server = createServer({ defaultCharset: 'iso-8859-1', extended: extended })
+        request(server)
+          .post('/')
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .send('%A2=%BD')
+          .expect(200, '{"¢":"½"}', done)
+      })
+
+      it('should parse x-www-form-urlencoded with an unspecified iso-8859-1 encoding when the utf8 sentinel has a value of %26%2310003%3B', function (done) {
+        var server = createServer({ charsetSentinel: true, extended: extended })
+        request(server)
+          .post('/')
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .send('utf8=%26%2310003%3B&user=%C3%B8')
+          .expect(200, '{"user":"Ã¸"}', done)
+      })
+
+      it('should parse x-www-form-urlencoded with an unspecified utf-8 encoding when the utf8 sentinel has a value of %E2%9C%93 and the defaultCharset is iso-8859-1', function (done) {
+        var server = createServer({ charsetSentinel: true, extended: extended })
+        request(server)
+          .post('/')
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .send('utf8=%E2%9C%93&user=%C3%B8')
+          .expect(200, '{"user":"ø"}', done)
+      })
+
+      it('should not leave an empty string parameter when removing the utf8 sentinel from the start of the string', function (done) {
+        var server = createServer({ charsetSentinel: true, extended: extended })
+        request(server)
+          .post('/')
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .send('utf8=%E2%9C%93&foo=bar')
+          .expect(200, '{"foo":"bar"}', done)
+      })
+
+      it('should not leave an empty string parameter when removing the utf8 sentinel from the middle of the string', function (done) {
+        var server = createServer({ charsetSentinel: true, extended: extended })
+        request(server)
+          .post('/')
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .send('foo=bar&utf8=%E2%9C%93&baz=quux')
+          .expect(200, '{"foo":"bar","baz":"quux"}', done)
+      })
+
+      it('should not leave an empty string parameter when removing the utf8 sentinel from the end of the string', function (done) {
+        var server = createServer({ charsetSentinel: true, extended: extended })
+        request(server)
+          .post('/')
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .send('foo=bar&baz=quux&utf8=%E2%9C%93')
+          .expect(200, '{"foo":"bar","baz":"quux"}', done)
+      })
+    })
+  })
+
   it('should handle empty message-body', function (done) {
     request(createServer({ limit: '1kb' }))
       .post('/')
@@ -56,7 +125,7 @@ describe('bodyParser.urlencoded()', function () {
       .expect(200, '{}', done)
   })
 
-  it('should 500 if stream not readable', function (done) {
+  it('should handle consumed stream', function (done) {
     var urlencodedParser = bodyParser.urlencoded()
     var server = createServer(function (req, res, next) {
       req.on('end', function () {
@@ -69,7 +138,7 @@ describe('bodyParser.urlencoded()', function () {
       .post('/')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .send('user=tobi')
-      .expect(500, '[stream.not.readable] stream is not readable', done)
+      .expect(200, 'undefined', done)
   })
 
   it('should handle duplicated middleware', function (done) {
@@ -88,12 +157,12 @@ describe('bodyParser.urlencoded()', function () {
       .expect(200, '{"user":"tobi"}', done)
   })
 
-  it('should parse extended syntax', function (done) {
+  it('should not parse extended syntax', function (done) {
     request(this.server)
       .post('/')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .send('user[name][first]=Tobi')
-      .expect(200, '{"user":{"name":{"first":"Tobi"}}}', done)
+      .expect(200, '{"user[name][first]":"Tobi"}', done)
   })
 
   describe('with extended option', function () {
@@ -195,7 +264,7 @@ describe('bodyParser.urlencoded()', function () {
       it('should parse deep object', function (done) {
         var str = 'foo'
 
-        for (var i = 0; i < 500; i++) {
+        for (var i = 0; i < 32; i++) {
           str += '[p]'
         }
 
@@ -213,9 +282,81 @@ describe('bodyParser.urlencoded()', function () {
             var depth = 0
             var ref = obj.foo
             while ((ref = ref.p)) { depth++ }
-            assert.strictEqual(depth, 500)
+            assert.strictEqual(depth, 32)
           })
           .expect(200, done)
+      })
+    })
+  })
+
+  describe('with depth option', function () {
+    describe('when custom value set', function () {
+      it('should reject non positive numbers', function () {
+        assert.throws(createServer.bind(null, { extended: true, depth: -1 }),
+          /TypeError: option depth must be a zero or a positive number/)
+        assert.throws(createServer.bind(null, { extended: true, depth: NaN }),
+          /TypeError: option depth must be a zero or a positive number/)
+        assert.throws(createServer.bind(null, { extended: true, depth: 'beep' }),
+          /TypeError: option depth must be a zero or a positive number/)
+      })
+
+      it('should parse up to the specified depth', function (done) {
+        this.server = createServer({ extended: true, depth: 10 })
+        request(this.server)
+          .post('/')
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .send('a[b][c][d]=value')
+          .expect(200, '{"a":{"b":{"c":{"d":"value"}}}}', done)
+      })
+
+      it('should not parse beyond the specified depth', function (done) {
+        this.server = createServer({ extended: true, depth: 1 })
+        request(this.server)
+          .post('/')
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .send('a[b][c][d][e]=value')
+          .expect(400, '[querystring.parse.rangeError] The input exceeded the depth', done)
+      })
+    })
+
+    describe('when default value', function () {
+      before(function () {
+        this.server = createServer({ extended: true })
+      })
+
+      it('should parse deeply nested objects', function (done) {
+        var deepObject = 'a'
+        for (var i = 0; i < 32; i++) {
+          deepObject += '[p]'
+        }
+        deepObject += '=value'
+
+        request(this.server)
+          .post('/')
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .send(deepObject)
+          .expect(function (res) {
+            var obj = JSON.parse(res.text)
+            var depth = 0
+            var ref = obj.a
+            while ((ref = ref.p)) { depth++ }
+            assert.strictEqual(depth, 32)
+          })
+          .expect(200, done)
+      })
+
+      it('should not parse beyond the specified depth', function (done) {
+        var deepObject = 'a'
+        for (var i = 0; i < 33; i++) {
+          deepObject += '[p]'
+        }
+        deepObject += '=value'
+
+        request(this.server)
+          .post('/')
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .send(deepObject)
+          .expect(400, '[querystring.parse.rangeError] The input exceeded the depth', done)
       })
     })
   })
@@ -456,7 +597,7 @@ describe('bodyParser.urlencoded()', function () {
           .post('/')
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .send('user=tobi')
-          .expect(200, '{}', done)
+          .expect(200, 'undefined', done)
       })
     })
 
@@ -488,7 +629,7 @@ describe('bodyParser.urlencoded()', function () {
           .post('/')
           .set('Content-Type', 'application/x-foo')
           .send('user=tobi')
-          .expect(200, '{}', done)
+          .expect(200, 'undefined', done)
       })
     })
 
@@ -655,7 +796,7 @@ describe('bodyParser.urlencoded()', function () {
         .send('buzz')
         .expect(200)
         .expect('x-store-foo', 'bar')
-        .expect('{}')
+        .expect('undefined')
         .end(done)
     })
 
@@ -762,6 +903,14 @@ describe('bodyParser.urlencoded()', function () {
       test.expect(200, '{"name":"论"}', done)
     })
 
+    it('should support brotli encoding', function (done) {
+      var test = request(this.server).post('/')
+      test.set('Content-Encoding', 'br')
+      test.set('Content-Type', 'application/x-www-form-urlencoded')
+      test.write(Buffer.from('8b03806e616d653de8aeba03', 'hex'))
+      test.expect(200, '{"name":"论"}', done)
+    })
+
     it('should be case-insensitive', function (done) {
       var test = request(this.server).post('/')
       test.set('Content-Encoding', 'GZIP')
@@ -809,7 +958,7 @@ function createServer (opts) {
         res.end('[' + err.type + '] ' + err.message)
       } else {
         res.statusCode = 200
-        res.end(JSON.stringify(req.body))
+        res.end(JSON.stringify(req.body) || typeof req.body)
       }
     })
   })
